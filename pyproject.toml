@@ -1,0 +1,49 @@
+[project]
+name = "health-tech"
+version = "0.1.0"
+description = "Patient health portal backend: auth and user services."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+    "bcrypt>=5.0",
+    "fastapi>=0.120",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.11",
+    "pyjwt>=2.10",
+    "sqlalchemy>=2.0.44",
+    "uvicorn>=0.38",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2.12"]
+sentry = ["sentry-sdk>=2.40"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28",
+    "pytest>=8.4",
+    "ruff>=0.14",
+]
+
+[project.scripts]
+user-service = "health_tech.user.main:main"
+auth-service = "health_tech.auth.main:main"
+seed-db = "health_tech.migrate.seed:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/health_tech"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "N"]
