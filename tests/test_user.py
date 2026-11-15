@@ -5,8 +5,9 @@ from sqlalchemy import select
 
 from health_tech.lib.ids import NIL_UUID
 from health_tech.lib.mail import MailError
+from health_tech.lib.tokenmaker import TokenPurpose, TokenRequirements, generate_token
 from health_tech.user.model import RoleAccount, User, UserRole
-from tests.conftest import auth_header
+from tests.conftest import auth_header, make_token
 
 NEW_PATIENT = {
     "email": "user1@example.com",
@@ -52,6 +53,20 @@ def insert_user(db, email: str = "user2@example.com") -> uuid.UUID:
         pytest.param({"X-USER-TOKEN": "not-a-jwt"}, 401, id="invalid token"),
         pytest.param(auth_header(UserRole.PATIENT), 403, id="patient"),
         pytest.param(auth_header(UserRole.HOSPITAL_ADMIN), 403, id="hospital admin"),
+        pytest.param(
+            {"X-USER-TOKEN": make_token(UserRole.SUPER_ADMIN, purpose=TokenPurpose.REFRESH)},
+            401,
+            id="super admin refresh token",
+        ),
+        pytest.param(
+            {
+                "X-USER-TOKEN": make_token(
+                    UserRole.SUPER_ADMIN, purpose=TokenPurpose.EMAIL_CONFIRMATION
+                )
+            },
+            401,
+            id="super admin email confirmation token",
+        ),
     ],
 )
 def test_create_user_refuses_non_super_admins(user_client, db, headers, expected_status):
@@ -72,9 +87,27 @@ def test_create_patient_creates_user_and_role_account(user_client, db, mailer):
     with db() as session:
         account = session.scalars(select(RoleAccount)).one()
         assert account.role == UserRole.PATIENT
+        assert account.role_account_id != NIL_UUID
         assert account.is_confirmed is False
         assert account.password_hash != NEW_PATIENT["password"]
     assert [email for email, _ in mailer.sent] == [NEW_PATIENT["email"]]
+
+
+@pytest.mark.parametrize("role", [UserRole.PATIENT, UserRole.SUPER_ADMIN])
+def test_each_new_role_account_gets_its_own_id(user_client, db, role):
+    for email in ("user1@example.com", "user3@example.com"):
+        resp = user_client.post(
+            "/health-tech/user",
+            json={**NEW_PATIENT, "email": email, "role": role},
+            headers=auth_header(UserRole.SUPER_ADMIN),
+        )
+        assert resp.status_code == 200
+
+    with db() as session:
+        ids = session.scalars(select(RoleAccount.role_account_id)).all()
+    assert len(ids) == 2
+    assert NIL_UUID not in ids
+    assert len(set(ids)) == 2
 
 
 def test_create_user_rolls_back_when_mail_fails(user_client, db, mailer):
@@ -121,6 +154,40 @@ def test_confirm_user_marks_account_confirmed(user_client, db, mailer):
     assert resp.status_code == 200
     with db() as session:
         assert session.scalars(select(RoleAccount.is_confirmed)).one() is True
+
+
+def test_emailed_confirmation_token_is_not_a_session_token(user_client, db, mailer):
+    new_admin = {**NEW_PATIENT, "email": "user3@example.com", "role": UserRole.SUPER_ADMIN}
+    user_client.post("/health-tech/user", json=new_admin, headers=auth_header(UserRole.SUPER_ADMIN))
+    _, link_token = mailer.sent[0]
+
+    resp = user_client.post(
+        "/health-tech/user", json=NEW_PATIENT, headers={"X-USER-TOKEN": link_token}
+    )
+
+    assert resp.status_code == 401
+    with db() as session:
+        assert [user.email for user in User.get_users(session)] == [new_admin["email"]]
+
+
+def test_confirm_user_rejects_non_confirmation_tokens(user_client, db, mailer):
+    user_client.post(
+        "/health-tech/user", json=NEW_PATIENT, headers=auth_header(UserRole.SUPER_ADMIN)
+    )
+    with db() as session:
+        account = session.scalars(select(RoleAccount)).one()
+    identity = TokenRequirements(
+        email=account.email, user_id=str(account.user_id), role=account.role
+    )
+
+    for purpose in (TokenPurpose.ACCESS, TokenPurpose.REFRESH):
+        resp = user_client.get(
+            "/health-tech/user/confirm", params={"token": generate_token(identity, purpose)}
+        )
+        assert resp.status_code == 400
+
+    with db() as session:
+        assert session.scalars(select(RoleAccount.is_confirmed)).one() is False
 
 
 def test_confirm_user_requires_token(user_client):
@@ -170,6 +237,25 @@ def test_hospital_admin_creates_doctor(user_client, db, mailer):
         assert account.role_account_id != NIL_UUID
         assert account.confirmation_token
     assert len(mailer.sent) == 1
+
+
+def test_provider_confirmation_token_cannot_create_providers(user_client, db, mailer):
+    user_client.post(
+        "/health-tech/user/healthcare-providers",
+        json=provider_body(insert_user(db), UserRole.HOSPITAL_ADMIN),
+        headers=auth_header(UserRole.SUPER_ADMIN),
+    )
+    _, link_token = mailer.sent[0]
+
+    resp = user_client.post(
+        "/health-tech/user/healthcare-providers",
+        json={**provider_body(insert_user(db, "user4@example.com")), "email": "user4@example.com"},
+        headers={"X-USER-TOKEN": link_token},
+    )
+
+    assert resp.status_code == 401
+    with db() as session:
+        assert session.scalars(select(RoleAccount.role)).all() == [UserRole.HOSPITAL_ADMIN]
 
 
 @pytest.mark.parametrize(

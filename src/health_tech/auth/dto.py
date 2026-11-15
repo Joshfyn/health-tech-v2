@@ -15,12 +15,21 @@ class SignInUserRequest(BaseModel):
 class SignInUserResponse(BaseModel):
     """Response of POST /health-tech/auth/signin."""
 
+    message: str
     token: str
+    refresh_token: str
 
 
 @dataclass(frozen=True, slots=True)
 class ValidateTokenRequest:
     """Token read from the X-USER-TOKEN header."""
+
+    token: str
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshTokenRequest:
+    """Refresh token read from the X-REFRESH-TOKEN header."""
 
     token: str
 

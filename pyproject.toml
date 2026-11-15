@@ -30,6 +30,7 @@ dev = [
 user-service = "health_tech.user.main:main"
 auth-service = "health_tech.auth.main:main"
 seed-db = "health_tech.migrate.seed:main"
+migrate-db = "health_tech.migrate.migrations:main"
 
 [build-system]
 requires = ["hatchling"]

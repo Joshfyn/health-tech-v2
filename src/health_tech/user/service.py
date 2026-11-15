@@ -13,9 +13,10 @@ from health_tech.lib.ids import uuid_from_string_or_nil
 from health_tech.lib.mail import Mailer, MailError
 from health_tech.lib.tokenmaker import (
     TokenError,
+    TokenPurpose,
     TokenRequirements,
     generate_token,
-    validate_verification_token,
+    validate_token,
 )
 from health_tech.logger import Clog
 from health_tech.user.dto import (
@@ -60,7 +61,8 @@ class UserService:
         req = account.req
         try:
             verification_token = generate_token(
-                TokenRequirements(email=req.email, user_id=str(account.user_id), role=req.role)
+                TokenRequirements(email=req.email, user_id=str(account.user_id), role=req.role),
+                TokenPurpose.EMAIL_CONFIRMATION,
             )
         except TokenError as exc:
             self.logger.errorf(request, "Error generating verification token: %s", exc)
@@ -178,7 +180,8 @@ class UserService:
             verification_token = generate_token(
                 TokenRequirements(
                     email=req.email, user_id=str(account.role_account_id), role=req.role
-                )
+                ),
+                TokenPurpose.EMAIL_CONFIRMATION,
             )
         except TokenError as exc:
             self.logger.errorf(request, "Error generating verification token: %s", exc)
@@ -220,7 +223,7 @@ class UserService:
     ) -> ConfirmUserResponse:
         """Confirm the role account named in the confirmation token."""
         try:
-            claims = validate_verification_token(req.token)
+            claims = validate_token(req.token, TokenPurpose.EMAIL_CONFIRMATION)
         except TokenError as exc:
             raise AbortError(400, {"error": str(exc)}) from exc
 

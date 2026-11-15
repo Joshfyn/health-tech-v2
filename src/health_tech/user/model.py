@@ -6,7 +6,17 @@ from enum import StrEnum
 from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import JSON, Boolean, DateTime, String, Text, Uuid, select, update
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    String,
+    Text,
+    Uuid,
+    select,
+    update,
+)
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from health_tech.lib.db import Base, NotFoundError
@@ -14,6 +24,7 @@ from health_tech.lib.ids import NIL_UUID
 
 USERS_TABLE = "users"
 ROLE_ACCOUNTS_TABLE = "role_accounts"
+ROLE_ACCOUNT_ID_NOT_NIL = "ck_role_accounts_role_account_id_not_nil"
 
 
 class UserRole(StrEnum):
@@ -129,9 +140,8 @@ class RoleAccount(Base):
 
     __tablename__ = ROLE_ACCOUNTS_TABLE
 
-    # Surrogate key; role_account_id is not set on every account.
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    role_account_id: Mapped[uuid.UUID] = mapped_column(Uuid, default=NIL_UUID)
+    role_account_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
     email: Mapped[str] = mapped_column(String, index=True)
     role: Mapped[str] = mapped_column(String)
@@ -142,6 +152,8 @@ class RoleAccount(Base):
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (CheckConstraint(role_account_id != NIL_UUID, name=ROLE_ACCOUNT_ID_NOT_NIL),)
 
     def create_new_user_account(self, session: Session) -> None:
         """Insert the role account within the session's transaction."""

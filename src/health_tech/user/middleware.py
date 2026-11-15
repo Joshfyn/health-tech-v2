@@ -10,7 +10,7 @@ from starlette.concurrency import run_in_threadpool
 from health_tech.lib.http import AbortError, BindError, bind_json
 from health_tech.lib.ids import NIL_UUID
 from health_tech.lib.password import PasswordError, generate_from_password
-from health_tech.lib.tokenmaker import TokenClaims, TokenError, validate_verification_token
+from health_tech.lib.tokenmaker import TokenClaims, TokenError, TokenPurpose, validate_token
 from health_tech.user.dto import (
     ConfirmUserRequest,
     CreateNewUserNoPwdRequest,
@@ -36,7 +36,7 @@ def _verify_token(auth_token: str) -> TokenClaims:
         log.info("No token provided")
         raise AbortError(401, {"error": "Unauthorized"})
     try:
-        return validate_verification_token(auth_token)
+        return validate_token(auth_token, TokenPurpose.ACCESS)
     except TokenError as exc:
         log.info("Error validating token: %s", exc)
         raise AbortError(401, {"error": "Unauthorized"}) from exc
