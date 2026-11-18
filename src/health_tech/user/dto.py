@@ -1,33 +1,66 @@
-"""User service request and response models."""
+"""User service request and response models.
+
+Requests are validated by the field types in lib/validation.py and drop unknown fields.
+Responses are built field by field from the database models and never are those models.
+"""
 
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, ValidationError
 
 from health_tech.lib.ids import NIL_UUID
-from health_tech.user.model import Contact, to_lower
+from health_tech.lib.validation import (
+    AddressPart,
+    DateOfBirth,
+    Email,
+    NationalId,
+    NewPassword,
+    PersonName,
+    Phone,
+    PostalCode,
+    RequestModel,
+    ResponseModel,
+    Street,
+)
+from health_tech.user.model import User
 
 
-class CreateNewUserNoPwdRequest(BaseModel):
-    """Body of POST /health-tech/user."""
+class AddressRequest(RequestModel):
+    """Physical address in a request."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    street: Street = ""
+    city: AddressPart = ""
+    state: AddressPart = ""
+    zip_code: PostalCode = Field("", alias="zipCode")
+    country: AddressPart = ""
 
-    email: str = ""
+
+class ContactRequest(RequestModel):
+    """Contact information in a request."""
+
+    phone: Phone = ""
+    address: AddressRequest = Field(default_factory=AddressRequest)
+
+
+class CreateNewUserNoPwdRequest(RequestModel):
+    """Body of POST /health-tech/user.
+
+    The email and names are lower-cased (lib/normalize.py), as they are stored, which also
+    keeps the emailed confirmation token in step with the stored account. Which values are
+    required is checked by the middleware.
+    """
+
+    email: Email = ""
     role: str = ""
-    first_name: str = Field("", alias="firstName")
-    last_name: str = Field("", alias="lastName")
-    date_of_birth: datetime | None = Field(None, alias="dateOfBirth")
-    contact: Contact = Field(default_factory=Contact)
-    national_id: str = Field("", alias="nationalID")
-    password: str = ""
-
-    # Emails and names are stored in lower case; lowering here also keeps the emailed
-    # confirmation token in step with the stored account.
-    _lower = field_validator("email", "first_name", "last_name")(to_lower)
+    first_name: PersonName = Field("", alias="firstName")
+    last_name: PersonName = Field("", alias="lastName")
+    date_of_birth: DateOfBirth = Field(None, alias="dateOfBirth")
+    contact: ContactRequest = Field(default_factory=ContactRequest)
+    national_id: NationalId = Field("", alias="nationalID")
+    password: NewPassword = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,25 +73,21 @@ class NewUserAccount:
     password_hash: str
 
 
-class CreateNewUserNoPwdResponse(BaseModel):
+class CreateNewUserNoPwdResponse(ResponseModel):
     """Response of POST /health-tech/user."""
 
     message: str
 
 
-class CreateProviderAccountRequest(BaseModel):
+class CreateProviderAccountRequest(RequestModel):
     """Body of POST /health-tech/user/healthcare-providers."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    email: str = ""
+    email: Email = ""
     role: str = ""
-    password: str = ""
+    password: NewPassword = ""
     user_id: uuid.UUID = Field(NIL_UUID, alias="userId")
     # Required from super admins; hospital and pharmacy admins add to their own organisation.
     organisation_id: uuid.UUID = Field(NIL_UUID, alias="organisationId")
-
-    _lower_email = field_validator("email")(to_lower)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,17 +101,13 @@ class NewProviderAccount:
     organisation_id: uuid.UUID
 
 
-class AddProviderOrganisationRequest(BaseModel):
+class AddProviderOrganisationRequest(RequestModel):
     """Body of POST /health-tech/user/healthcare-providers/organisations."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    email: str = ""
+    email: Email = ""
     role: str = ""
     # Required from super admins; hospital and pharmacy admins add to their own organisation.
     organisation_id: uuid.UUID = Field(NIL_UUID, alias="organisationId")
-
-    _lower_email = field_validator("email")(to_lower)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,19 +119,19 @@ class ProviderOrganisation:
     organisation_id: uuid.UUID
 
 
-class AddProviderOrganisationResponse(BaseModel):
+class AddProviderOrganisationResponse(ResponseModel):
     """Response of POST /health-tech/user/healthcare-providers/organisations."""
 
     message: str
 
 
-class CreateProviderAccountResponse(BaseModel):
+class CreateProviderAccountResponse(ResponseModel):
     """Response of POST /health-tech/user/healthcare-providers."""
 
     message: str
 
 
-class PutNewPasswordResponse(BaseModel):
+class PutNewPasswordResponse(ResponseModel):
     """Response of a password change."""
 
     message: str
@@ -119,7 +144,7 @@ class ConfirmUserRequest:
     token: str
 
 
-class ConfirmUserResponse(BaseModel):
+class ConfirmUserResponse(ResponseModel):
     """Response of GET /health-tech/user/confirm."""
 
     message: str
@@ -142,12 +167,78 @@ class ListUsersRequest:
         return (self.page - 1) * self.page_size
 
 
-class ListUsersResponse(BaseModel):
+class AddressResponse(ResponseModel):
+    """Physical address in a response."""
+
+    street: str = ""
+    city: str = ""
+    state: str = ""
+    zip_code: str = Field("", alias="zipCode")
+    country: str = ""
+
+
+class ContactResponse(ResponseModel):
+    """Contact information in a response."""
+
+    phone: str = ""
+    address: AddressResponse = Field(default_factory=AddressResponse)
+
+    @classmethod
+    def from_stored(cls, stored: dict[str, Any] | None) -> Self:
+        """Return the known fields of a stored contact; anything else stored is left out."""
+        try:
+            return cls.model_validate(stored or {})
+        except ValidationError:
+            # Written before requests were validated; show nothing rather than fail the read.
+            return cls()
+
+
+class UserSummaryResponse(ResponseModel):
+    """A user in a listing: everything but the national ID."""
+
+    id: uuid.UUID
+    email: str
+    first_name: str = Field(alias="firstName")
+    last_name: str = Field(alias="lastName")
+    date_of_birth: datetime | None = Field(alias="dateOfBirth")
+    contact: ContactResponse
+    created_at: datetime | None = Field(alias="createdAt")
+    updated_at: datetime | None = Field(alias="updatedAt")
+
+    @classmethod
+    def from_user(cls, user: User) -> Self:
+        """Copy the fields a listing shows from user."""
+        return cls(**_user_fields(user))
+
+
+class UserResponse(UserSummaryResponse):
+    """Response of GET /health-tech/user/{user_id}: one user's record."""
+
+    national_id: str = Field(alias="nationalID")
+
+    @classmethod
+    def from_user(cls, user: User) -> Self:
+        """Copy the fields a record shows from user."""
+        return cls(**_user_fields(user), national_id=user.national_id)
+
+
+def _user_fields(user: User) -> dict[str, Any]:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "date_of_birth": user.date_of_birth,
+        "contact": ContactResponse.from_stored(user.contact),
+        "created_at": user.created_at,
+        "updated_at": user.updated_at,
+    }
+
+
+class ListUsersResponse(ResponseModel):
     """Response of GET /health-tech/user: one page of users."""
 
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
-
-    users: list[dict[str, Any]]
+    users: list[UserSummaryResponse]
     page: int
     page_size: int = Field(alias="pageSize")
     total: int

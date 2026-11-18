@@ -67,8 +67,11 @@ def insert_user(db, email: str = "user2@example.com") -> uuid.UUID:
     [
         pytest.param({}, 401, id="no token"),
         pytest.param({"X-USER-TOKEN": "not-a-jwt"}, 401, id="invalid token"),
-        pytest.param(auth_header(UserRole.PATIENT), 403, id="patient"),
-        pytest.param(auth_header(UserRole.HOSPITAL_ADMIN), 403, id="hospital admin"),
+        *[
+            pytest.param(auth_header(role), 401, id=role)
+            for role in UserRole
+            if role != UserRole.SUPER_ADMIN
+        ],
         pytest.param(
             {"X-USER-TOKEN": make_token(UserRole.SUPER_ADMIN, purpose=TokenPurpose.REFRESH)},
             401,
@@ -143,10 +146,10 @@ def test_create_user_rolls_back_when_mail_fails(user_client, db, mailer):
     ("body", "expected"),
     [
         pytest.param(
-            {**NEW_PATIENT, "password": ""}, {"error": "password is required"}, id="no password"
+            {**NEW_PATIENT, "password": ""}, messages.PASSWORD_REQUIRED.body(), id="no password"
         ),
         pytest.param(
-            {**NEW_PATIENT, "firstName": 5}, {"error": "invalid request body"}, id="bad type"
+            {**NEW_PATIENT, "firstName": 5}, messages.INVALID_REQUEST_BODY.body(), id="bad type"
         ),
     ],
 )
@@ -215,7 +218,7 @@ def test_confirm_user_requires_token(user_client):
 @pytest.mark.parametrize(
     ("caller", "role", "expected_status"),
     [
-        pytest.param(UserRole.PATIENT, UserRole.DOCTOR, 403, id="patient caller"),
+        pytest.param(UserRole.PATIENT, UserRole.DOCTOR, 401, id="patient caller"),
         pytest.param(
             UserRole.HOSPITAL_ADMIN, UserRole.PHARMACIST, 403, id="hospital admin, pharmacist"
         ),
@@ -277,8 +280,8 @@ def test_provider_confirmation_token_cannot_create_providers(user_client, db, ma
 @pytest.mark.parametrize(
     ("existing_role", "expected"),
     [
-        pytest.param(None, {"error": "user must have a basic account first"}, id="unknown user"),
-        pytest.param(UserRole.DOCTOR, {"error": "user already has this role"}, id="duplicate role"),
+        pytest.param(None, messages.BASIC_ACCOUNT_REQUIRED.body(), id="unknown user"),
+        pytest.param(UserRole.DOCTOR, messages.ROLE_ALREADY_HELD.body(), id="duplicate role"),
     ],
 )
 def test_create_provider_rejects_unknown_user_or_duplicate_role(
@@ -304,11 +307,12 @@ def test_create_provider_rejects_unknown_user_or_duplicate_role(
 # --- Listing users: super admins only, one page at a time ---
 
 USERS = "/health-tech/user"
-FORBIDDEN = {"error": messages.FORBIDDEN}
-USER_NOT_FOUND = {"error": messages.USER_NOT_FOUND}
-INVALID_CONFIRMATION_TOKEN = {"error": messages.INVALID_CONFIRMATION_TOKEN}
-INTERNAL_SERVER_ERROR = {"error": messages.INTERNAL_SERVER_ERROR}
-ORGANISATION_ID_REQUIRED = {"error": messages.ORGANISATION_ID_REQUIRED}
+FORBIDDEN = messages.FORBIDDEN.body()
+ROLE_NOT_ALLOWED = messages.ROLE_NOT_ALLOWED.body()
+USER_NOT_FOUND = messages.USER_NOT_FOUND.body()
+INVALID_CONFIRMATION_TOKEN = messages.INVALID_CONFIRMATION_TOKEN.body()
+INTERNAL_SERVER_ERROR = messages.INTERNAL_ERROR.body()
+ORGANISATION_ID_REQUIRED = messages.ORGANISATION_ID_REQUIRED.body()
 
 
 def insert_users(db, count: int) -> list[uuid.UUID]:
@@ -342,7 +346,7 @@ def insert_users(db, count: int) -> list[uuid.UUID]:
             id="super admin refresh token",
         ),
         *[
-            pytest.param(auth_header(role, str(uuid.uuid4()), str(uuid.uuid4())), 403, id=role)
+            pytest.param(auth_header(role, str(uuid.uuid4()), str(uuid.uuid4())), 401, id=role)
             for role in UserRole
             if role != UserRole.SUPER_ADMIN
         ],
@@ -447,8 +451,8 @@ def test_list_users_accepts_the_maximum_page_size(user_client, db):
     assert len(resp.json()["users"]) == MAX_PAGE_SIZE
 
 
-PAGE_ERROR = {"error": messages.INVALID_PAGE}
-PAGE_SIZE_ERROR = {"error": messages.INVALID_PAGE_SIZE}
+PAGE_ERROR = messages.INVALID_PAGE.body()
+PAGE_SIZE_ERROR = messages.INVALID_PAGE_SIZE.body()
 
 
 @pytest.mark.parametrize(
@@ -547,8 +551,8 @@ def test_other_roles_have_no_per_patient_access(user_client, db, role):
         resp = user_client.get(
             user_url(target), headers=auth_header(role, str(own), str(uuid.uuid4()))
         )
-        assert resp.status_code == 403
-        assert resp.json() == FORBIDDEN
+        assert resp.status_code == 401
+        assert resp.json() == ROLE_NOT_ALLOWED
 
 
 @pytest.mark.parametrize(
@@ -623,9 +627,10 @@ def test_signed_in_patient_reads_only_own_record(user_client, auth_client, db, m
 
     assert own.status_code == 200
     assert own.json()["email"] == "user1@example.com"
-    assert other.status_code == 403
+    assert other.status_code == 403  # patients may read records: not this one
     assert other.json() == FORBIDDEN
-    assert listing.status_code == 403
+    assert listing.status_code == 401  # patients may not list users at all
+    assert listing.json() == ROLE_NOT_ALLOWED
 
 
 # --- Confirmation tokens name the person and the exact role account ---
@@ -836,7 +841,7 @@ def test_confirm_user_database_error_is_internal_server_error(user_client, maile
 
 # --- One login per email and role ---
 
-ACCOUNT_EXISTS = {"error": messages.ACCOUNT_EXISTS}
+ACCOUNT_EXISTS = messages.ACCOUNT_EXISTS.body()
 PROVIDERS = "/health-tech/user/healthcare-providers"
 
 
@@ -1181,7 +1186,7 @@ def test_adding_to_an_organisation_twice_is_a_conflict(user_client, db):
     )
 
     assert resp.status_code == 409
-    assert resp.json() == {"error": messages.ALREADY_IN_ORGANISATION}
+    assert resp.json() == messages.ALREADY_IN_ORGANISATION.body()
     assert memberships(db) == [("user2@example.com", ORGANISATION_ID)]
 
 
@@ -1191,7 +1196,7 @@ def test_adding_an_unknown_provider_is_not_found(user_client, db):
     )
 
     assert resp.status_code == 404
-    assert resp.json() == {"error": messages.PROVIDER_NOT_FOUND}
+    assert resp.json() == messages.PROVIDER_NOT_FOUND.body()
     assert memberships(db) == []
 
 
@@ -1231,7 +1236,7 @@ def test_adding_to_organisation_losing_the_race_is_a_conflict(user_client, db, m
     )
 
     assert resp.status_code == 409
-    assert resp.json() == {"error": messages.ALREADY_IN_ORGANISATION}
+    assert resp.json() == messages.ALREADY_IN_ORGANISATION.body()
     assert len(checks) == 2
 
 
@@ -1240,7 +1245,7 @@ def test_adding_to_organisation_losing_the_race_is_a_conflict(user_client, db, m
     [
         pytest.param({}, add_organisation_body(), 401, None, id="no token"),
         *[
-            pytest.param(auth_header(role), add_organisation_body(), 403, FORBIDDEN, id=role)
+            pytest.param(auth_header(role), add_organisation_body(), 401, ROLE_NOT_ALLOWED, id=role)
             for role in (UserRole.PATIENT, UserRole.DOCTOR, UserRole.PHARMACIST)
         ],
         pytest.param(
@@ -1275,14 +1280,14 @@ def test_adding_to_organisation_losing_the_race_is_a_conflict(user_client, db, m
             auth_header(UserRole.SUPER_ADMIN),
             add_organisation_body(role=UserRole.PATIENT),
             400,
-            {"error": messages.NOT_ORGANISATION_ROLE},
+            messages.NOT_ORGANISATION_ROLE.body(),
             id="patient role",
         ),
         pytest.param(
             auth_header(UserRole.SUPER_ADMIN),
             add_organisation_body(email=""),
             400,
-            {"error": messages.EMAIL_REQUIRED},
+            messages.EMAIL_REQUIRED.body(),
             id="no email",
         ),
         pytest.param(
@@ -1296,7 +1301,7 @@ def test_adding_to_organisation_losing_the_race_is_a_conflict(user_client, db, m
             auth_header(UserRole.SUPER_ADMIN),
             add_organisation_body("abc"),
             400,
-            {"error": "invalid request body"},
+            messages.INVALID_REQUEST_BODY.body(),
             id="malformed organisation",
         ),
     ],
@@ -1448,17 +1453,20 @@ def test_list_users_without_token_is_unauthorized(user_client, db):
     resp = user_client.get(USERS)
 
     assert resp.status_code == 401
-    assert resp.json() == {"error": "Unauthorized"}
+    assert resp.json() == {"code": "unauthorized", "error": "Unauthorized"}
 
 
-def test_list_users_with_patient_token_is_forbidden(user_client, auth_client, db, mailer):
+def test_list_users_with_patient_token_is_unauthorized(user_client, auth_client, db, mailer):
     insert_users(db, 3)
     token = signed_in_token(user_client, auth_client, mailer, UserRole.PATIENT, "pat@example.com")
 
     resp = user_client.get(USERS, headers={"X-USER-TOKEN": token})
 
-    assert resp.status_code == 403
-    assert resp.json() == FORBIDDEN
+    assert resp.status_code == 401
+    assert resp.json() == {
+        "code": "role_not_allowed",
+        "error": "this role is not allowed to use this endpoint",
+    }
 
 
 def test_list_users_with_super_admin_token_is_ok(user_client, auth_client, db, mailer):
@@ -1541,10 +1549,10 @@ def test_one_record_still_shows_its_national_id(user_client, db):
 @pytest.mark.parametrize(
     ("override", "expected"),
     [
-        pytest.param({"email": ""}, {"error": "email is required"}, id="no email"),
-        pytest.param({"userId": str(NIL_UUID)}, {"error": "user id is required"}, id="no user"),
-        pytest.param({"password": ""}, {"error": "password is required"}, id="no password"),
-        pytest.param({"role": "nurse"}, {"error": "bad request"}, id="unknown role"),
+        pytest.param({"email": ""}, messages.EMAIL_REQUIRED.body(), id="no email"),
+        pytest.param({"userId": str(NIL_UUID)}, messages.USER_ID_REQUIRED.body(), id="no user"),
+        pytest.param({"password": ""}, messages.PASSWORD_REQUIRED.body(), id="no password"),
+        pytest.param({"role": "nurse"}, messages.NOT_PROVIDER_ROLE.body(), id="unknown role"),
     ],
 )
 def test_create_provider_rejects_incomplete_body(user_client, db, mailer, override, expected):

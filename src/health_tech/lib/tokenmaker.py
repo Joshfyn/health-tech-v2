@@ -2,7 +2,6 @@
 
 import hashlib
 import hmac
-import logging
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -10,6 +9,7 @@ from enum import StrEnum
 import jwt
 
 from health_tech.lib.config import get_settings
+from health_tech.logger import log
 
 SIGNING_ALGORITHM = "HS256"
 KEY_DERIVATION_LABEL = "health-tech/jwt/"
@@ -24,8 +24,6 @@ CLAIM_ORGANISATION_ID = "OrganisationID"
 CLAIM_ROLE = "Role"
 CLAIM_PURPOSE = "Purpose"
 BASE_REQUIRED_CLAIMS = ["exp", "iat", CLAIM_PURPOSE]
-
-log = logging.getLogger(__name__)
 
 
 class TokenPurpose(StrEnum):

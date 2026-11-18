@@ -6,6 +6,7 @@ from importlib import resources
 from sqlalchemy import Engine
 
 from health_tech.lib.db import connect_to_db
+from health_tech.lib.normalize import lower_case
 from health_tech.user import model as _models  # noqa: F401  registers tables for create_all
 
 SQL_PACKAGE = "health_tech.migrate"
@@ -43,7 +44,8 @@ def run_migrations(engine: Engine) -> list[str]:
 
 
 def _unicode_lower(value: object) -> object:
-    return value.lower() if isinstance(value, str) else value
+    # The services' own handler, so scripts lower-case exactly as the services do.
+    return lower_case(value) if isinstance(value, str) else value
 
 
 def _execute_script(engine: Engine, sql: str) -> None:

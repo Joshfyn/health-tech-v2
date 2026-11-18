@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from health_tech import logger as clog
 from health_tech.auth import messages
 from health_tech.auth import service as auth_service
 from health_tech.auth.model import Auth
@@ -36,9 +35,9 @@ ROLE = UserRole.PATIENT.value
 # The person the signed-in role account belongs to (users.id).
 PERSON_ID = uuid.UUID("5a3f1c9e-8d2b-4e7a-9c1d-2b6e4f8a0c37")
 SIGN_IN = "/health-tech/auth/signin"
-INVALID_CREDENTIALS = {"error": messages.INVALID_CREDENTIALS}
-UNAUTHORIZED = {"error": messages.UNAUTHORIZED}
-USER_NOT_AUTHORIZED = {"error": messages.USER_NOT_AUTHORIZED}
+INVALID_CREDENTIALS = messages.INVALID_CREDENTIALS.body()
+UNAUTHORIZED = messages.UNAUTHORIZED.body()
+USER_NOT_AUTHORIZED = messages.USER_NOT_AUTHORIZED.body()
 
 
 @pytest.fixture
@@ -131,13 +130,13 @@ def test_sign_in_refuses_account_without_id(legacy_db):
                 is_active=True,
             )
         )
-    svc = AuthService(db=legacy_db, logger=clog.must_new("auth"))
+    svc = AuthService(db=legacy_db)
 
     with TestClient(new_auth_router(svc)) as client:
         resp = client.post(SIGN_IN, json={"email": EMAIL, "password": PASSWORD, "role": ROLE})
 
     assert resp.status_code == 500
-    assert resp.json() == {"error": messages.INTERNAL_SERVER_ERROR}
+    assert resp.json() == messages.INTERNAL_ERROR.body()
 
 
 def test_sign_in_tokens_are_not_interchangeable(auth_client, role_account_id):
@@ -200,23 +199,23 @@ def test_sign_in_database_error_is_internal_server_error(auth_client, monkeypatc
     resp = auth_client.post(SIGN_IN, json={"email": EMAIL, "password": PASSWORD, "role": ROLE})
 
     assert resp.status_code == 500
-    assert resp.json() == {"error": messages.INTERNAL_SERVER_ERROR}
+    assert resp.json() == messages.INTERNAL_ERROR.body()
 
 
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
-        pytest.param({"password": PASSWORD}, {"error": messages.EMAIL_REQUIRED}, id="no email"),
-        pytest.param({"email": EMAIL}, {"error": messages.PASSWORD_REQUIRED}, id="no password"),
-        pytest.param(None, {"error": messages.INVALID_REQUEST_BODY}, id="no body"),
+        pytest.param({"password": PASSWORD}, messages.EMAIL_REQUIRED.body(), id="no email"),
+        pytest.param({"email": EMAIL}, messages.PASSWORD_REQUIRED.body(), id="no password"),
+        pytest.param(None, messages.INVALID_REQUEST_BODY.body(), id="no body"),
         pytest.param(
             {"email": EMAIL, "password": PASSWORD, "role": None},
-            {"error": messages.INVALID_REQUEST_BODY},
+            messages.INVALID_REQUEST_BODY.body(),
             id="null role",
         ),
         pytest.param(
             {"email": EMAIL, "password": PASSWORD, "role": 5},
-            {"error": messages.INVALID_REQUEST_BODY},
+            messages.INVALID_REQUEST_BODY.body(),
             id="role not a string",
         ),
     ],
@@ -374,19 +373,19 @@ def test_sign_in_refuses_account_without_user(legacy_db):
                 is_active=True,
             )
         )
-    svc = AuthService(db=legacy_db, logger=clog.must_new("auth"))
+    svc = AuthService(db=legacy_db)
 
     with TestClient(new_auth_router(svc)) as client:
         resp = client.post(SIGN_IN, json={"email": EMAIL, "password": PASSWORD, "role": ROLE})
 
     assert resp.status_code == 500
-    assert resp.json() == {"error": messages.INTERNAL_SERVER_ERROR}
+    assert resp.json() == messages.INTERNAL_ERROR.body()
 
 
 # --- Sign in names the role: one email can hold several logins ---
 
-ROLE_REQUIRED = {"error": messages.ROLE_REQUIRED}
-INVALID_ROLE = {"error": messages.INVALID_ROLE}
+ROLE_REQUIRED = messages.ROLE_REQUIRED.body()
+INVALID_ROLE = messages.INVALID_ROLE.body()
 
 
 @pytest.fixture
@@ -444,7 +443,7 @@ def test_sign_in_with_unknown_role_returns_early(auth_client, role_account_id, n
 def test_unknown_role_answer_does_not_list_the_roles(auth_client, role_account_id):
     resp = auth_client.post(SIGN_IN, json={"email": EMAIL, "password": PASSWORD, "role": "p"})
 
-    assert resp.json() == {"error": "unknown role"}
+    assert resp.json() == {"code": "invalid_role", "error": "unknown role"}
     for role in UserRole:
         assert role.value not in resp.text
 
@@ -581,20 +580,20 @@ def test_sign_in_refuses_to_guess_on_database_not_yet_migrated(legacy_db):
     # Only a database that has not run migrate-db can still hold such duplicates.
     for _ in range(2):
         add_account(legacy_db, UserRole.PATIENT, PASSWORD)
-    svc = AuthService(db=legacy_db, logger=clog.must_new("auth"))
+    svc = AuthService(db=legacy_db)
 
     with TestClient(new_auth_router(svc)) as client:
         resp = client.post(SIGN_IN, json={"email": EMAIL, "password": PASSWORD, "role": ROLE})
 
     assert resp.status_code == 500
-    assert resp.json() == {"error": messages.INTERNAL_SERVER_ERROR}
+    assert resp.json() == messages.INTERNAL_ERROR.body()
 
 
 # --- Organisation roles sign in to one organisation, named in the query string ---
 
-ORGANISATION_ID_REQUIRED = {"error": messages.ORGANISATION_ID_REQUIRED}
-INVALID_ORGANISATION_ID = {"error": messages.INVALID_ORGANISATION_ID}
-ORGANISATION_ID_NOT_ALLOWED = {"error": messages.ORGANISATION_ID_NOT_ALLOWED}
+ORGANISATION_ID_REQUIRED = messages.ORGANISATION_ID_REQUIRED.body()
+INVALID_ORGANISATION_ID = messages.INVALID_ORGANISATION_ID.body()
+ORGANISATION_ID_NOT_ALLOWED = messages.ORGANISATION_ID_NOT_ALLOWED.body()
 NON_ORGANISATION_ROLES = [role for role in UserRole if role not in ORGANISATION_ROLES]
 
 
@@ -848,7 +847,7 @@ def test_sign_in_token_failure_is_internal_server_error(auth_client, role_accoun
     resp = sign_in(auth_client, UserRole.PATIENT, PASSWORD)
 
     assert resp.status_code == 500
-    assert resp.json() == {"error": messages.INTERNAL_SERVER_ERROR}
+    assert resp.json() == messages.INTERNAL_ERROR.body()
 
 
 def test_refresh_token_failure_is_internal_server_error(auth_client, monkeypatch):
@@ -862,4 +861,4 @@ def test_refresh_token_failure_is_internal_server_error(auth_client, monkeypatch
     resp = auth_client.post("/health-tech/auth/refresh", headers=headers)
 
     assert resp.status_code == 500
-    assert resp.json() == {"error": messages.INTERNAL_SERVER_ERROR}
+    assert resp.json() == messages.INTERNAL_ERROR.body()

@@ -34,7 +34,8 @@ def connect_to_db(settings: Settings | None = None) -> sessionmaker[Session]:
     """Connect to the database, create missing tables and return a session factory."""
     url = database_url(settings or get_settings())
     connect_args = {"check_same_thread": False} if url.get_backend_name() == "sqlite" else {}
-    engine = create_engine(url, connect_args=connect_args)
+    # Bound values (emails, names, password hashes) never appear in error messages or logs.
+    engine = create_engine(url, connect_args=connect_args, hide_parameters=True)
     # Creates the tables of every model imported so far.
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)

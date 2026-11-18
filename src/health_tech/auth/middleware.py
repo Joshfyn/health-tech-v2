@@ -1,6 +1,5 @@
 """Request validation for the auth service."""
 
-import logging
 import uuid
 from typing import Annotated
 
@@ -13,14 +12,13 @@ from health_tech.auth.dto import (
     SignInUserRequest,
     ValidateTokenRequest,
 )
-from health_tech.lib.http import AbortError, BindError, bind_json
+from health_tech.lib.http import AbortError, bind_json
 from health_tech.lib.ids import NIL_UUID
+from health_tech.logger import log
 from health_tech.user.model import ORGANISATION_ROLES, UserRole
 
 AUTH_HEADER = "X-USER-TOKEN"
 REFRESH_HEADER = "X-REFRESH-TOKEN"
-
-log = logging.getLogger(__name__)
 
 
 def validate_token_request(
@@ -28,7 +26,7 @@ def validate_token_request(
 ) -> ValidateTokenRequest:
     """Read the token from the X-USER-TOKEN header."""
     if not x_user_token:
-        raise AbortError(401, {"error": messages.UNAUTHORIZED})
+        raise AbortError(messages.UNAUTHORIZED)
     return ValidateTokenRequest(token=x_user_token)
 
 
@@ -37,7 +35,7 @@ def validate_refresh_token_request(
 ) -> RefreshTokenRequest:
     """Read the refresh token from the X-REFRESH-TOKEN header."""
     if not x_refresh_token:
-        raise AbortError(401, {"error": messages.UNAUTHORIZED})
+        raise AbortError(messages.UNAUTHORIZED)
     return RefreshTokenRequest(token=x_refresh_token)
 
 
@@ -54,22 +52,19 @@ async def validate_sign_in_user_request(
     ] = "",
 ) -> SignInAttempt:
     """Validate the sign-in body and the organisation in the query string."""
-    try:
-        req = await bind_json(request, SignInUserRequest)
-    except BindError as exc:
-        raise AbortError(400, {"error": messages.INVALID_REQUEST_BODY}) from exc
+    req = await bind_json(request, SignInUserRequest)
     if not req.email:
         log.info("Email is required")
-        raise AbortError(400, {"error": messages.EMAIL_REQUIRED})
+        raise AbortError(messages.EMAIL_REQUIRED)
     if not req.password:
         log.info("Password is required")
-        raise AbortError(400, {"error": messages.PASSWORD_REQUIRED})
+        raise AbortError(messages.PASSWORD_REQUIRED)
     if not req.role:
         log.info("Role is required")
-        raise AbortError(400, {"error": messages.ROLE_REQUIRED})
+        raise AbortError(messages.ROLE_REQUIRED)
     if not is_known_role(req.role):
-        log.info("Unknown role: %r", req.role)
-        raise AbortError(400, {"error": messages.INVALID_ROLE})
+        log.info("Unknown role")
+        raise AbortError(messages.INVALID_ROLE)
     return SignInAttempt(
         email=req.email,
         password=req.password,
@@ -83,18 +78,18 @@ def _organisation_for_role(role: str, organisation_id: str) -> uuid.UUID | None:
     if role not in ORGANISATION_ROLES:
         if organisation_id:
             log.info("Organisation id given for role %s", role)
-            raise AbortError(400, {"error": messages.ORGANISATION_ID_NOT_ALLOWED})
+            raise AbortError(messages.ORGANISATION_ID_NOT_ALLOWED)
         return None
     if not organisation_id:
         log.info("Organisation id is required for role %s", role)
-        raise AbortError(400, {"error": messages.ORGANISATION_ID_REQUIRED})
+        raise AbortError(messages.ORGANISATION_ID_REQUIRED)
     try:
         parsed = uuid.UUID(organisation_id)
     except ValueError:
         parsed = NIL_UUID
     if parsed == NIL_UUID:
-        log.info("Invalid organisation id: %r", organisation_id)
-        raise AbortError(400, {"error": messages.INVALID_ORGANISATION_ID})
+        log.info("Invalid organisation id")
+        raise AbortError(messages.INVALID_ORGANISATION_ID)
     return parsed
 
 

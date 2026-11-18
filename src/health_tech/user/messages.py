@@ -1,21 +1,70 @@
-"""User service response messages for listing users, reading a user's record, confirmation,
-logins whose email and role are taken, and provider organisations."""
+"""User service response messages.
+
+Errors come from the catalog in lib/errors.py, which fixes each one's status, code and text;
+they are re-exported here so the service and its tests name them in one place.
+"""
 
 from typing import Final
 
-INVALID_PAGE: Final = "page must be a positive integer"
-INVALID_PAGE_SIZE: Final = "pageSize must be a positive integer"
+from health_tech.lib.errors import (
+    ACCOUNT_EXISTS,
+    ACCOUNT_ROLE_NOT_ALLOWED,
+    ALREADY_IN_ORGANISATION,
+    BASIC_ACCOUNT_REQUIRED,
+    EMAIL_REQUIRED,
+    FIRST_NAME_REQUIRED,
+    FORBIDDEN,
+    INTERNAL_ERROR,
+    INVALID_CONFIRMATION_TOKEN,
+    INVALID_PAGE,
+    INVALID_PAGE_SIZE,
+    INVALID_REQUEST_BODY,
+    INVALID_ROLE,
+    LAST_NAME_REQUIRED,
+    NOT_ORGANISATION_ROLE,
+    NOT_PROVIDER_ROLE,
+    ORGANISATION_ID_REQUIRED,
+    PASSWORD_REQUIRED,
+    PROVIDER_NOT_FOUND,
+    ROLE_ALREADY_HELD,
+    ROLE_NOT_ALLOWED,
+    UNAUTHORIZED,
+    USER_ID_REQUIRED,
+    USER_NOT_FOUND,
+)
 
-FORBIDDEN: Final = "Forbidden"
-USER_NOT_FOUND: Final = "user not found"
-INVALID_CONFIRMATION_TOKEN: Final = "invalid confirmation token"
-ACCOUNT_EXISTS: Final = "an account with this email and role already exists"
-
-EMAIL_REQUIRED: Final = "email is required"
-ORGANISATION_ID_REQUIRED: Final = "organisation id is required"
-NOT_ORGANISATION_ROLE: Final = "role does not work for organisations"
-PROVIDER_NOT_FOUND: Final = "provider account not found"
-ALREADY_IN_ORGANISATION: Final = "provider already works for this organisation"
+USER_CREATED: Final = "User created successfully"
+USER_CONFIRMED: Final = "User confirmed successfully"
+PROVIDER_CREATED: Final = "Provider account created successfully"
 PROVIDER_ADDED_TO_ORGANISATION: Final = "Provider added to organisation"
 
-INTERNAL_SERVER_ERROR: Final = "internal server error"
+__all__ = [
+    "ACCOUNT_EXISTS",
+    "ACCOUNT_ROLE_NOT_ALLOWED",
+    "ALREADY_IN_ORGANISATION",
+    "BASIC_ACCOUNT_REQUIRED",
+    "EMAIL_REQUIRED",
+    "FIRST_NAME_REQUIRED",
+    "FORBIDDEN",
+    "INTERNAL_ERROR",
+    "INVALID_CONFIRMATION_TOKEN",
+    "INVALID_PAGE",
+    "INVALID_PAGE_SIZE",
+    "INVALID_REQUEST_BODY",
+    "INVALID_ROLE",
+    "LAST_NAME_REQUIRED",
+    "NOT_ORGANISATION_ROLE",
+    "NOT_PROVIDER_ROLE",
+    "ORGANISATION_ID_REQUIRED",
+    "PASSWORD_REQUIRED",
+    "PROVIDER_ADDED_TO_ORGANISATION",
+    "PROVIDER_CREATED",
+    "PROVIDER_NOT_FOUND",
+    "ROLE_ALREADY_HELD",
+    "ROLE_NOT_ALLOWED",
+    "UNAUTHORIZED",
+    "USER_CONFIRMED",
+    "USER_CREATED",
+    "USER_ID_REQUIRED",
+    "USER_NOT_FOUND",
+]

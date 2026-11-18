@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import CheckConstraint, Engine, MetaData, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from health_tech import logger as clog
 from health_tech.auth.router import new_auth_router
 from health_tech.auth.service import AuthService
 from health_tech.lib.config import Settings, get_settings
@@ -79,14 +78,14 @@ def mailer() -> FakeMailer:
 
 @pytest.fixture
 def user_client(db, mailer) -> Iterator[TestClient]:
-    svc = UserService(db=db, logger=clog.must_new("user"), mailer=mailer)
+    svc = UserService(db=db, mailer=mailer)
     with TestClient(new_user_router(svc)) as client:
         yield client
 
 
 @pytest.fixture
 def auth_client(db) -> Iterator[TestClient]:
-    svc = AuthService(db=db, logger=clog.must_new("auth"))
+    svc = AuthService(db=db)
     with TestClient(new_auth_router(svc)) as client:
         yield client
 

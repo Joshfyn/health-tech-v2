@@ -23,6 +23,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column, validates
 
 from health_tech.lib.db import Base, NotFoundError
 from health_tech.lib.ids import NIL_UUID
+from health_tech.lib.normalize import lower_email, lower_name
 
 USERS_TABLE = "users"
 ROLE_ACCOUNTS_TABLE = "role_accounts"
@@ -51,10 +52,9 @@ ORGANISATION_ROLES = frozenset(
     {UserRole.DOCTOR, UserRole.PHARMACIST, UserRole.HOSPITAL_ADMIN, UserRole.PHARMACY_ADMIN}
 )
 
-
-def to_lower(value: str | None) -> str | None:
-    """Emails and names are stored in lower case, so they compare without regard to case."""
-    return value.lower() if value is not None else None
+# Roles whose login POST /health-tech/user creates along with the user. Organisation roles'
+# logins are created with POST /health-tech/user/healthcare-providers.
+SELF_REGISTERED_ROLES = frozenset({UserRole.PATIENT, UserRole.SUPER_ADMIN})
 
 
 class EntityType(StrEnum):
@@ -110,31 +110,14 @@ class User(Base):
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    @validates("email", "first_name", "last_name")
-    def _store_lower(self, _: str, value: str | None) -> str | None:
-        return to_lower(value)
+    # Every write, not only the API's (the seed script, say), stores these in lower case.
+    @validates("email")
+    def _store_lower_email(self, _: str, value: str | None) -> str | None:
+        return lower_email(value)
 
-    def to_json(self, *, include_national_id: bool = True) -> dict[str, Any]:
-        """Serialize the user with the API field names.
-
-        Listings leave the national ID out; it is shown only when one record is read.
-        """
-        data: dict[str, Any] = {
-            "id": str(self.id),
-            "email": self.email,
-            "firstName": self.first_name,
-            "lastName": self.last_name,
-        }
-        if self.date_of_birth is not None:
-            data["dateOfBirth"] = self.date_of_birth.isoformat()
-        data["contact"] = self.contact
-        if include_national_id:
-            data["nationalID"] = self.national_id
-        data |= {
-            "createdAt": _isoformat(self.created_at),
-            "updatedAt": _isoformat(self.updated_at),
-        }
-        return data
+    @validates("first_name", "last_name")
+    def _store_lower_name(self, _: str, value: str | None) -> str | None:
+        return lower_name(value)
 
     def create_new_user(self, session: Session) -> None:
         """Insert the user within the session's transaction."""
@@ -211,8 +194,8 @@ class RoleAccount(Base):
     )
 
     @validates("email")
-    def _store_lower(self, _: str, value: str | None) -> str | None:
-        return to_lower(value)
+    def _store_lower_email(self, _: str, value: str | None) -> str | None:
+        return lower_email(value)
 
     def create_new_user_account(self, session: Session) -> None:
         """Insert the role account within the session's transaction."""
@@ -222,7 +205,7 @@ class RoleAccount(Base):
     @classmethod
     def get_by_email_and_role(cls, session: Session, *, email: str, role: str) -> Self:
         """Return the login with this email and role; raise NotFoundError if there is none."""
-        stmt = select(cls).where(cls.email == to_lower(email), cls.role == role)
+        stmt = select(cls).where(cls.email == lower_email(email), cls.role == role)
         account = session.scalars(stmt.limit(1)).first()
         if account is None:
             raise NotFoundError("no role account has this email and role")
@@ -231,7 +214,7 @@ class RoleAccount(Base):
     @classmethod
     def email_role_taken(cls, session: Session, *, email: str, role: str) -> bool:
         """Report whether a role account already has this email and role."""
-        stmt = select(cls.id).where(cls.email == to_lower(email), cls.role == role).limit(1)
+        stmt = select(cls.id).where(cls.email == lower_email(email), cls.role == role).limit(1)
         return session.scalars(stmt).first() is not None
 
     @classmethod
@@ -290,7 +273,3 @@ class OrganisationMembership(Base):
         """Insert the membership within the session's transaction."""
         session.add(self)
         session.flush()
-
-
-def _isoformat(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None

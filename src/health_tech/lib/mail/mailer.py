@@ -1,6 +1,5 @@
 """SMTP and console implementations of Mailer."""
 
-import logging
 import smtplib
 import sys
 from email.message import EmailMessage
@@ -8,6 +7,7 @@ from email.message import EmailMessage
 from health_tech.lib.config import Settings
 from health_tech.lib.env import get_service_host_with_port
 from health_tech.lib.mail.interface import Mailer
+from health_tech.logger import log
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
@@ -42,8 +42,6 @@ HTML_TEMPLATE = """
 </html>
 """
 
-log = logging.getLogger(__name__)
-
 
 class MailError(Exception):
     """An email could not be sent."""
@@ -63,6 +61,20 @@ def build_confirmation_email(recipient_email: str, jwt_token: str) -> EmailMessa
     msg["Subject"] = SUBJECT
     msg.set_content(HTML_TEMPLATE.format(url=confirmation_url(jwt_token)), subtype="html")
     return msg
+
+
+def _describe(exc: Exception) -> str:
+    """Describe a send failure for the log without the addresses smtplib puts in it.
+
+    The logger redacts fields by name; smtplib lists refused recipients keyed by the addresses
+    themselves, and servers echo them in replies, so only the reply codes are kept.
+    """
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        codes = sorted({code for code, _ in exc.recipients.values()})
+        return f"SMTPRecipientsRefused codes={codes}"
+    if isinstance(exc, smtplib.SMTPResponseException):  # auth, sender, data errors
+        return f"{type(exc).__name__} code={exc.smtp_code}"
+    return f"{type(exc).__name__}: {exc}"  # connection errors and timeouts name no one
 
 
 class SmtpMailer:
@@ -91,8 +103,8 @@ class SmtpMailer:
                 smtp.login(self._user, self._password)
                 smtp.send_message(msg)
         except (smtplib.SMTPException, OSError) as exc:
-            raise MailError(f"failed to send confirmation email: {exc}") from exc
-        log.info("Verification email successfully dispatched to %s.", recipient_email)
+            raise MailError(f"failed to send confirmation email: {_describe(exc)}") from exc
+        log.info("Confirmation email sent")
 
 
 class ConsoleMailer:
@@ -108,10 +120,16 @@ class ConsoleMailer:
 
 
 def new_mailer(settings: Settings) -> Mailer:
-    """Return the mailer selected by MAIL_BACKEND."""
+    """Return the mailer selected by MAIL_BACKEND.
+
+    The console mailer prints addresses and confirmation tokens to stdout, where the logs go,
+    so production refuses it.
+    """
     match settings.mail_backend:
         case "" | "smtp":
             return SmtpMailer(settings.smtp_user, settings.smtp_pass)
+        case "console" if settings.is_production:
+            raise ValueError("MAIL_BACKEND=console is not allowed in production")
         case "console":
             return ConsoleMailer()
         case other:

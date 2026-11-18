@@ -3,23 +3,20 @@
 import uuid
 from dataclasses import dataclass
 
-from pydantic import BaseModel, field_validator
-
-from health_tech.user.model import to_lower
+from health_tech.lib.validation import Email, Password, RequestModel, ResponseModel
 
 
-class SignInUserRequest(BaseModel):
+class SignInUserRequest(RequestModel):
     """Body of POST /health-tech/auth/signin.
 
-    role picks which of the person's logins to sign in to when one email has several.
+    role picks which of the person's logins to sign in to when one email has several. The
+    email is lower-cased, as stored emails are. The password has no minimum length here, so a
+    short wrong password is refused like any other wrong password.
     """
 
-    email: str = ""
-    password: str = ""
+    email: Email = ""
+    password: Password = ""
     role: str = ""
-
-    # Stored emails are lower case; so is the one looked up.
-    _lower_email = field_validator("email")(to_lower)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +32,7 @@ class SignInAttempt:
     organisation_id: uuid.UUID | None
 
 
-class SignInUserResponse(BaseModel):
+class SignInUserResponse(ResponseModel):
     """Response of POST /health-tech/auth/signin."""
 
     message: str
@@ -57,7 +54,7 @@ class RefreshTokenRequest:
     token: str
 
 
-class ValidateTokenResponse(BaseModel):
+class ValidateTokenResponse(ResponseModel):
     """Response of GET /health-tech/auth/validate.
 
     user_id is the person (users.id); role_account_id is the login the token was issued to.
@@ -70,7 +67,7 @@ class ValidateTokenResponse(BaseModel):
     organisation_id: str
 
 
-class RefreshTokenResponse(BaseModel):
+class RefreshTokenResponse(ResponseModel):
     """Response of POST /health-tech/auth/refresh."""
 
     token: str

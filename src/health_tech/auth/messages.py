@@ -1,20 +1,40 @@
-"""Auth service response messages."""
+"""Auth service response messages.
+
+Errors come from the catalog in lib/errors.py, which fixes each one's status, code and text;
+they are re-exported here so the service and its tests name them in one place.
+"""
 
 from typing import Final
 
+from health_tech.lib.errors import (
+    EMAIL_REQUIRED,
+    INTERNAL_ERROR,
+    INVALID_CREDENTIALS,
+    INVALID_ORGANISATION_ID,
+    INVALID_REQUEST_BODY,
+    INVALID_ROLE,
+    ORGANISATION_ID_NOT_ALLOWED,
+    ORGANISATION_ID_REQUIRED,
+    PASSWORD_REQUIRED,
+    ROLE_REQUIRED,
+    UNAUTHORIZED,
+    USER_NOT_AUTHORIZED,
+)
+
 SIGN_IN_SUCCESS: Final = "User signed in successfully"
 
-INVALID_REQUEST_BODY: Final = "invalid request body"
-EMAIL_REQUIRED: Final = "email is required"
-PASSWORD_REQUIRED: Final = "password is required"
-ROLE_REQUIRED: Final = "role is required"
-INVALID_ROLE: Final = "unknown role"
-ORGANISATION_ID_REQUIRED: Final = "organisation id is required"
-INVALID_ORGANISATION_ID: Final = "invalid organisation id"
-ORGANISATION_ID_NOT_ALLOWED: Final = "organisation id is not allowed for this role"
-
-INVALID_CREDENTIALS: Final = "invalid credentials"
-UNAUTHORIZED: Final = "Unauthorized"
-USER_NOT_AUTHORIZED: Final = "user not authorized"
-
-INTERNAL_SERVER_ERROR: Final = "internal server error"
+__all__ = [
+    "EMAIL_REQUIRED",
+    "INTERNAL_ERROR",
+    "INVALID_CREDENTIALS",
+    "INVALID_ORGANISATION_ID",
+    "INVALID_REQUEST_BODY",
+    "INVALID_ROLE",
+    "ORGANISATION_ID_NOT_ALLOWED",
+    "ORGANISATION_ID_REQUIRED",
+    "PASSWORD_REQUIRED",
+    "ROLE_REQUIRED",
+    "SIGN_IN_SUCCESS",
+    "UNAUTHORIZED",
+    "USER_NOT_AUTHORIZED",
+]

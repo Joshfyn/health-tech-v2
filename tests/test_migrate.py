@@ -376,12 +376,13 @@ def users(engine: Engine) -> list[tuple]:
 
 def test_lowercase_migration_lowers_emails_and_names_only(legacy_engine):
     add_user(legacy_engine, "Sam@Example.COM", "SAM", "McExample")
-    add_user(legacy_engine, "élodie@example.com", "ÉLODIE", "ØRSTED")
+    add_user(legacy_engine, "ÉLODIE@example.com", "ÉLODIE", "ØRSTED")
     add_user(legacy_engine, "ann@example.com", "ann", "lee")
     add_account(legacy_engine, "Sam@Example.COM", uuid.uuid4(), "doctor")
 
     assert run_migrations(legacy_engine) == MIGRATIONS
 
+    # Unicode, not only ASCII: the SQLite lower() is the services' own handler.
     assert users(legacy_engine) == [
         ("ann@example.com", "ann", "lee", "AB-12", {"address": {"state": "EX"}}),
         ("sam@example.com", "sam", "mcexample", "AB-12", {"address": {"state": "EX"}}),

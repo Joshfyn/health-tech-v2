@@ -4,9 +4,9 @@ import math
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -14,6 +14,7 @@ from health_tech.lib.db import NotFoundError
 from health_tech.lib.http import AbortError
 from health_tech.lib.ids import NIL_UUID, uuid_from_string_or_nil
 from health_tech.lib.mail import Mailer, MailError
+from health_tech.lib.normalize import lower_email
 from health_tech.lib.tokenmaker import (
     TokenError,
     TokenPurpose,
@@ -21,7 +22,7 @@ from health_tech.lib.tokenmaker import (
     generate_token,
     validate_token,
 )
-from health_tech.logger import Clog
+from health_tech.logger import log
 from health_tech.user import messages
 from health_tech.user.dto import (
     AddProviderOrganisationResponse,
@@ -34,6 +35,8 @@ from health_tech.user.dto import (
     NewProviderAccount,
     NewUserAccount,
     ProviderOrganisation,
+    UserResponse,
+    UserSummaryResponse,
 )
 from health_tech.user.middleware import (
     authorize_user_record_access,
@@ -44,16 +47,15 @@ from health_tech.user.middleware import (
     validate_list_users_request,
 )
 from health_tech.user.model import (
+    SELF_REGISTERED_ROLES,
     AccountExistsError,
     OrganisationMembership,
     RoleAccount,
     RoleExistsError,
     User,
-    UserRole,
 )
 
 SERVICE_NAME = "user"
-SELF_REGISTERED_ROLES = frozenset({UserRole.PATIENT, UserRole.SUPER_ADMIN})
 
 
 @dataclass(slots=True)
@@ -61,12 +63,10 @@ class UserService:
     """User service dependencies and HTTP handlers."""
 
     db: sessionmaker[Session]
-    logger: Clog
     mailer: Mailer
 
     def create_new_user_account(
         self,
-        request: Request,
         account: Annotated[NewUserAccount, Depends(validate_create_new_user_account_request)],
     ) -> CreateNewUserNoPwdResponse:
         """Create a user, plus a role account for patients and super admins."""
@@ -82,8 +82,8 @@ class UserService:
                 TokenPurpose.EMAIL_CONFIRMATION,
             )
         except TokenError as exc:
-            self.logger.errorf(request, "Error generating verification token: %s", exc)
-            raise AbortError(500, {"message": "internal server error"}) from exc
+            log.error("Error generating verification token: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
 
         now = datetime.now(UTC)
         user = User(
@@ -99,23 +99,22 @@ class UserService:
         )
         try:
             with self.db.begin() as session:
-                self._register_user(request, session, user, account, verification_token)
+                self._register_user(session, user, account, verification_token)
         except AccountExistsError as exc:
-            raise self._account_exists(request, req.role) from exc
+            raise self._account_exists(req.role) from exc
         except IntegrityError as exc:
             if req.role in SELF_REGISTERED_ROLES and self._email_role_taken(req.email, req.role):
-                raise self._account_exists(request, req.role) from exc
-            self.logger.errorf(request, "Error registering user in transaction: %s", exc)
-            raise AbortError(500, {"error": messages.INTERNAL_SERVER_ERROR}) from exc
+                raise self._account_exists(req.role) from exc
+            log.error("Error registering user in transaction: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
         except (SQLAlchemyError, RoleExistsError, MailError) as exc:
-            self.logger.errorf(request, "Error registering user in transaction: %s", exc)
-            raise AbortError(500, {"error": "internal server error"}) from exc
+            log.error("Error registering user in transaction: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
 
-        return CreateNewUserNoPwdResponse(message="User created successfully")
+        return CreateNewUserNoPwdResponse(message=messages.USER_CREATED)
 
     def _register_user(
         self,
-        request: Request,
         session: Session,
         user: User,
         account: NewUserAccount,
@@ -125,7 +124,7 @@ class UserService:
         try:
             user.create_new_user(session)
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error creating new user: %s", exc)
+            log.error("Error creating new user: %s", exc)
             raise
 
         if req.role not in SELF_REGISTERED_ROLES:
@@ -143,38 +142,37 @@ class UserService:
         try:
             user_roles = RoleAccount.get_all_user_roles(session, user.id)
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error getting user roles: %s", exc)
+            log.error("Error getting user roles: %s", exc)
             raise
         if req.role in user_roles:
-            self.logger.errorf(request, "User already has this role: %s", req.role)
+            log.error("User already has this role: %s", req.role)
             raise RoleExistsError("user already has this role")
 
-        self._check_email_role_free(request, session, role_account)
+        self._check_email_role_free(session, role_account)
         try:
             role_account.create_new_user_account(session)
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error creating patient account: %s", exc)
+            log.error("Error creating patient account: %s", exc)
             raise
 
         try:
             self.mailer.send_confirmation_email(user.email, verification_token)
         except MailError as exc:
-            self.logger.errorf(request, "Error sending confirmation email: %s", exc)
+            log.error("Error sending confirmation email: %s", exc)
             raise
 
     def get_users(
         self,
-        request: Request,
         req: Annotated[ListUsersRequest, Depends(validate_list_users_request)],
     ) -> ListUsersResponse:
         """Return one page of users. Super admins only."""
         try:
             with self.db() as session:
                 users, total = User.get_users_page(session, offset=req.offset, limit=req.page_size)
-                page = [user.to_json(include_national_id=False) for user in users]
+                page = [UserSummaryResponse.from_user(user) for user in users]
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error listing users: %s", exc)
-            raise AbortError(500, {"error": messages.INTERNAL_SERVER_ERROR}) from exc
+            log.error("Error listing users: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
         return ListUsersResponse(
             users=page,
             page=req.page,
@@ -185,22 +183,20 @@ class UserService:
 
     def get_user(
         self,
-        request: Request,
         user_id: Annotated[uuid.UUID, Depends(authorize_user_record_access)],
-    ) -> dict[str, Any]:
+    ) -> UserResponse:
         """Return one user's record: any user for super admins, only their own for patients."""
         try:
             with self.db() as session:
-                return User.get_user(session, user_id).to_json()
+                return UserResponse.from_user(User.get_user(session, user_id))
         except NotFoundError as exc:
-            raise AbortError(404, {"error": messages.USER_NOT_FOUND}) from exc
+            raise AbortError(messages.USER_NOT_FOUND) from exc
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error getting user: %s", exc)
-            raise AbortError(500, {"error": messages.INTERNAL_SERVER_ERROR}) from exc
+            log.error("Error getting user: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
 
     def create_provider_account(
         self,
-        request: Request,
         account: Annotated[NewProviderAccount, Depends(validate_create_provider_account_request)],
     ) -> CreateProviderAccountResponse:
         """Create a provider role account for an existing user."""
@@ -208,11 +204,12 @@ class UserService:
         try:
             with self.db() as session:
                 User.get_single_user(session, user_id=req.user_id)
-        except (NotFoundError, SQLAlchemyError) as exc:
-            self.logger.errorf(
-                request, "Error getting user: %s, user must have a basic account first", exc
-            )
-            raise AbortError(400, {"error": "user must have a basic account first"}) from exc
+        except NotFoundError as exc:
+            log.error("User must have a basic account first: %s", exc)
+            raise AbortError(messages.BASIC_ACCOUNT_REQUIRED) from exc
+        except SQLAlchemyError as exc:
+            log.error("Error getting user: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
 
         role_account = RoleAccount(
             role_account_id=account.role_account_id,
@@ -227,11 +224,11 @@ class UserService:
             with self.db() as session:
                 user_roles = RoleAccount.get_all_user_roles(session, req.user_id)
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error getting user roles: %s", exc)
-            raise AbortError(500, {"message": "internal server error"}) from exc
+            log.error("Error getting user roles: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
         if req.role in user_roles:
-            self.logger.errorf(request, "User already has this role: %s", req.role)
-            raise AbortError(400, {"error": "user already has this role"})
+            log.error("User already has this role: %s", req.role)
+            raise AbortError(messages.ROLE_ALREADY_HELD)
 
         try:
             verification_token = generate_token(
@@ -244,37 +241,36 @@ class UserService:
                 TokenPurpose.EMAIL_CONFIRMATION,
             )
         except TokenError as exc:
-            self.logger.errorf(request, "Error generating verification token: %s", exc)
-            raise AbortError(500, {"message": "internal server error"}) from exc
+            log.error("Error generating verification token: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
         role_account.confirmation_token = verification_token
 
         try:
             with self.db.begin() as session:
                 self._register_provider(
-                    request, session, role_account, account.organisation_id, verification_token
+                    session, role_account, account.organisation_id, verification_token
                 )
         except AccountExistsError as exc:
-            raise self._account_exists(request, req.role) from exc
+            raise self._account_exists(req.role) from exc
         except IntegrityError as exc:
             if self._email_role_taken(req.email, req.role):
-                raise self._account_exists(request, req.role) from exc
-            self.logger.errorf(request, "Error creating provider account in transaction: %s", exc)
-            raise AbortError(500, {"error": messages.INTERNAL_SERVER_ERROR}) from exc
+                raise self._account_exists(req.role) from exc
+            log.error("Error creating provider account in transaction: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
         except (SQLAlchemyError, MailError) as exc:
-            self.logger.errorf(request, "Error creating provider account in transaction: %s", exc)
-            raise AbortError(500, {"error": "internal server error"}) from exc
+            log.error("Error creating provider account in transaction: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
 
-        return CreateProviderAccountResponse(message="Provider account created successfully")
+        return CreateProviderAccountResponse(message=messages.PROVIDER_CREATED)
 
     def _register_provider(
         self,
-        request: Request,
         session: Session,
         role_account: RoleAccount,
         organisation_id: uuid.UUID,
         verification_token: str,
     ) -> None:
-        self._check_email_role_free(request, session, role_account)
+        self._check_email_role_free(session, role_account)
         try:
             role_account.create_new_user_account(session)
             OrganisationMembership(
@@ -283,18 +279,17 @@ class UserService:
                 created_at=datetime.now(UTC),
             ).add(session)
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error creating provider account: %s", exc)
+            log.error("Error creating provider account: %s", exc)
             raise
 
         try:
             self.mailer.send_confirmation_email(role_account.email, verification_token)
         except MailError as exc:
-            self.logger.errorf(request, "Error sending confirmation email: %s", exc)
+            log.error("Error sending confirmation email: %s", exc)
             raise
 
     def add_provider_organisation(
         self,
-        request: Request,
         req: Annotated[ProviderOrganisation, Depends(validate_add_provider_organisation_request)],
     ) -> AddProviderOrganisationResponse:
         """Let an existing provider login work for another organisation too."""
@@ -306,23 +301,23 @@ class UserService:
                     role_account_id=account.role_account_id,
                     organisation_id=req.organisation_id,
                 ):
-                    raise AbortError(409, {"error": messages.ALREADY_IN_ORGANISATION})
+                    raise AbortError(messages.ALREADY_IN_ORGANISATION)
                 OrganisationMembership(
                     role_account_id=account.role_account_id,
                     organisation_id=req.organisation_id,
                     created_at=datetime.now(UTC),
                 ).add(session)
         except NotFoundError as exc:
-            raise AbortError(404, {"error": messages.PROVIDER_NOT_FOUND}) from exc
+            raise AbortError(messages.PROVIDER_NOT_FOUND) from exc
         except IntegrityError as exc:
             # Another request added the same membership between the check and the insert.
             if self._is_member_after_failed_insert(req):
-                raise AbortError(409, {"error": messages.ALREADY_IN_ORGANISATION}) from exc
-            self.logger.errorf(request, "Error adding provider to organisation: %s", exc)
-            raise AbortError(500, {"error": messages.INTERNAL_SERVER_ERROR}) from exc
+                raise AbortError(messages.ALREADY_IN_ORGANISATION) from exc
+            log.error("Error adding provider to organisation: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error adding provider to organisation: %s", exc)
-            raise AbortError(500, {"error": messages.INTERNAL_SERVER_ERROR}) from exc
+            log.error("Error adding provider to organisation: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
         return AddProviderOrganisationResponse(message=messages.PROVIDER_ADDED_TO_ORGANISATION)
 
     def _is_member_after_failed_insert(self, req: ProviderOrganisation) -> bool:
@@ -337,16 +332,14 @@ class UserService:
         except NotFoundError, SQLAlchemyError:
             return False
 
-    def _check_email_role_free(
-        self, request: Request, session: Session, role_account: RoleAccount
-    ) -> None:
+    def _check_email_role_free(self, session: Session, role_account: RoleAccount) -> None:
         """Raise AccountExistsError if a login already has role_account's email and role."""
         try:
             taken = RoleAccount.email_role_taken(
                 session, email=role_account.email, role=role_account.role
             )
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error checking email and role: %s", exc)
+            log.error("Error checking email and role: %s", exc)
             raise
         if taken:
             raise AccountExistsError("an account with this email and role already exists")
@@ -363,21 +356,21 @@ class UserService:
         except SQLAlchemyError:
             return False
 
-    def _account_exists(self, request: Request, role: str) -> AbortError:
-        # Not with_fields: it would add the email to every later line of the shared logger.
-        self.logger.errorf(request, "An account with this email and role %s already exists", role)
-        return AbortError(409, {"error": messages.ACCOUNT_EXISTS})
+    def _account_exists(self, role: str) -> AbortError:
+        log.error("An account with this email and role %s already exists", role)
+        return AbortError(messages.ACCOUNT_EXISTS)
 
     def confirm_user(
         self,
-        request: Request,
         req: Annotated[ConfirmUserRequest, Depends(validate_confirm_user_request)],
     ) -> ConfirmUserResponse:
         """Confirm the role account named in the confirmation token."""
         try:
             claims = validate_token(req.token, TokenPurpose.EMAIL_CONFIRMATION)
         except TokenError as exc:
-            raise AbortError(400, {"error": str(exc)}) from exc
+            # The reason (expired, bad signature, ...) is for the log, not the client.
+            log.info("Invalid confirmation token: %s", exc)
+            raise AbortError(messages.INVALID_CONFIRMATION_TOKEN) from exc
 
         # UserID is the person; RoleAccountID, when present, is the exact login to confirm.
         user_id = uuid_from_string_or_nil(claims.user_id)
@@ -385,8 +378,8 @@ class UserService:
         if claims.role_account_id:
             role_account_id = uuid_from_string_or_nil(claims.role_account_id)
         if user_id == NIL_UUID or role_account_id == NIL_UUID:
-            self.logger.errorf(request, "Confirmation token has an invalid user or account id")
-            raise AbortError(400, {"error": messages.INVALID_CONFIRMATION_TOKEN})
+            log.error("Confirmation token has an invalid user or account id")
+            raise AbortError(messages.INVALID_CONFIRMATION_TOKEN)
 
         try:
             with self.db.begin() as session:
@@ -394,19 +387,19 @@ class UserService:
                 confirmed = RoleAccount.confirm_user(
                     session,
                     # Links emailed before emails were stored in lower case carry the old case.
-                    email=claims.email.lower(),
+                    email=lower_email(claims.email),
                     user_id=user_id,
                     role=claims.role,
                     role_account_id=role_account_id,
                 )
         except NotFoundError as exc:
-            self.logger.errorf(request, "User not found: %s", exc)
-            raise AbortError(404, {"error": messages.USER_NOT_FOUND}) from exc
+            log.error("User not found: %s", exc)
+            raise AbortError(messages.USER_NOT_FOUND) from exc
         except SQLAlchemyError as exc:
-            self.logger.errorf(request, "Error confirming user: %s", exc)
-            raise AbortError(500, {"error": messages.INTERNAL_SERVER_ERROR}) from exc
+            log.error("Error confirming user: %s", exc)
+            raise AbortError(messages.INTERNAL_ERROR) from exc
         if not confirmed:
-            self.logger.errorf(request, "No role account matches the confirmation token")
-            raise AbortError(404, {"error": messages.USER_NOT_FOUND})
+            log.error("No role account matches the confirmation token")
+            raise AbortError(messages.USER_NOT_FOUND)
 
-        return ConfirmUserResponse(message="User confirmed successfully")
+        return ConfirmUserResponse(message=messages.USER_CONFIRMED)
