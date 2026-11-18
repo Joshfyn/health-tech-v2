@@ -5,18 +5,27 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
-from sqlalchemy import Engine, create_engine, insert, make_url, select, update
+from sqlalchemy import Engine, create_engine, insert, inspect, make_url, select, update
 from sqlalchemy.exc import IntegrityError
 
 from health_tech.lib.db import Base
 from health_tech.lib.ids import NIL_UUID
 from health_tech.migrate import migrations
 from health_tech.migrate.migrations import MigrationError, run_migrations
-from health_tech.user.model import RoleAccount
+from health_tech.user.model import (
+    MEMBERSHIP_UNIQUE,
+    ORGANISATION_MEMBERSHIPS_TABLE,
+    ROLE_ACCOUNT_EMAIL_ROLE_UNIQUE,
+    RoleAccount,
+    User,
+)
 from tests.conftest import create_legacy_role_accounts
 
 ACCOUNTS = RoleAccount.__table__
 MIGRATION = "20261114170306_role_account_id_not_nil.sql"
+EMAIL_ROLE_MIGRATION = "20261117201625_role_accounts_email_role_unique.sql"
+LOWERCASE_MIGRATION = "20261117204659_lowercase_emails_and_names.sql"
+MIGRATIONS = [MIGRATION, EMAIL_ROLE_MIGRATION, LOWERCASE_MIGRATION]
 
 
 @pytest.fixture(params=["sqlite", "postgresql"])
@@ -55,14 +64,16 @@ def new_engine(engine) -> Engine:
     return engine
 
 
-def add_account(engine: Engine, email: str, role_account_id: uuid.UUID | None) -> None:
+def add_account(
+    engine: Engine, email: str, role_account_id: uuid.UUID | None, role: str = "patient"
+) -> None:
     with engine.begin() as conn:
         conn.execute(
             insert(ACCOUNTS).values(
                 role_account_id=role_account_id,
                 user_id=uuid.uuid4(),
                 email=email,
-                role="patient",
+                role=role,
                 is_active=True,
                 is_confirmed=True,
                 confirmation_token="",
@@ -83,7 +94,7 @@ def test_migration_gives_each_account_without_id_its_own_id(legacy_engine):
     add_account(legacy_engine, "user2@example.com", NIL_UUID)
     add_account(legacy_engine, "user3@example.com", existing_id)
 
-    assert run_migrations(legacy_engine) == [MIGRATION]
+    assert run_migrations(legacy_engine) == MIGRATIONS
 
     ids = account_ids(legacy_engine)
     assert ids["user3@example.com"] == existing_id
@@ -97,7 +108,7 @@ def test_migration_is_safe_to_rerun(legacy_engine):
     run_migrations(legacy_engine)
     before = account_ids(legacy_engine)
 
-    assert run_migrations(legacy_engine) == [MIGRATION]
+    assert run_migrations(legacy_engine) == MIGRATIONS
 
     assert account_ids(legacy_engine) == before
 
@@ -106,7 +117,7 @@ def test_migration_runs_on_new_database(new_engine):
     add_account(new_engine, "user1@example.com", uuid.uuid4())
     before = account_ids(new_engine)
 
-    assert run_migrations(new_engine) == [MIGRATION]
+    assert run_migrations(new_engine) == MIGRATIONS
 
     assert account_ids(new_engine) == before
 
@@ -214,6 +225,227 @@ def test_migrate_db_command_works_on_empty_database(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == f"Applied {MIGRATION}\n"
+    assert result.stdout == "".join(f"Applied {name}\n" for name in MIGRATIONS)
+    migrated = create_engine(url)
     with pytest.raises(IntegrityError):
-        add_account(create_engine(url), "user1@example.com", NIL_UUID)
+        add_account(migrated, "user1@example.com", NIL_UUID)
+    add_account(migrated, "user1@example.com", uuid.uuid4())
+    with pytest.raises(IntegrityError):
+        add_account(migrated, "user1@example.com", uuid.uuid4())
+
+
+# --- One login per email and role ---
+
+
+def email_role_index(engine: Engine) -> dict | None:
+    """The unique email-and-role index of role_accounts, if there is one."""
+    for index in inspect(engine).get_indexes(ACCOUNTS.name):
+        if index["name"] == ROLE_ACCOUNT_EMAIL_ROLE_UNIQUE:
+            return index
+    return None
+
+
+def accounts(engine: Engine) -> list[tuple[str, str]]:
+    with engine.connect() as conn:
+        rows = conn.execute(select(ACCOUNTS.c.email, ACCOUNTS.c.role)).all()
+    return sorted((email, role) for email, role in rows)
+
+
+def test_migrated_and_new_databases_have_the_same_email_role_index(legacy_engine, tmp_path):
+    assert email_role_index(legacy_engine) is None
+    run_migrations(legacy_engine)
+
+    new = create_engine(f"sqlite:///{tmp_path}/new.db")
+    Base.metadata.create_all(new)
+
+    for engine in (legacy_engine, new):
+        index = email_role_index(engine)
+        assert index is not None
+        assert index["column_names"] == ["email", "role"]
+        assert index["unique"]
+    new.dispose()
+
+
+@pytest.fixture(params=["migrated", "new"])
+def guarded_engine(request, engine) -> Engine:
+    """Database with the email-and-role rule, from migrate-db or from create_all."""
+    if request.param == "migrated":
+        create_legacy_role_accounts(engine)
+        run_migrations(engine)
+    else:
+        Base.metadata.create_all(engine)
+    return engine
+
+
+def test_database_rejects_second_login_with_same_email_and_role(guarded_engine):
+    add_account(guarded_engine, "user1@example.com", uuid.uuid4())
+
+    with pytest.raises(IntegrityError):
+        add_account(guarded_engine, "user1@example.com", uuid.uuid4())
+
+    assert accounts(guarded_engine) == [("user1@example.com", "patient")]
+
+
+def test_database_rejects_update_into_a_taken_email_and_role(guarded_engine):
+    add_account(guarded_engine, "user1@example.com", uuid.uuid4())
+    add_account(guarded_engine, "user2@example.com", uuid.uuid4())
+
+    with pytest.raises(IntegrityError), guarded_engine.begin() as conn:
+        conn.execute(
+            update(ACCOUNTS)
+            .where(ACCOUNTS.c.email == "user2@example.com")
+            .values(email="user1@example.com")
+        )
+
+    assert accounts(guarded_engine) == [
+        ("user1@example.com", "patient"),
+        ("user2@example.com", "patient"),
+    ]
+
+
+def test_same_email_in_other_roles_and_same_role_with_other_emails_are_allowed(guarded_engine):
+    add_account(guarded_engine, "user1@example.com", uuid.uuid4(), "patient")
+    add_account(guarded_engine, "user1@example.com", uuid.uuid4(), "doctor")
+    add_account(guarded_engine, "user2@example.com", uuid.uuid4(), "patient")
+
+    assert accounts(guarded_engine) == [
+        ("user1@example.com", "doctor"),
+        ("user1@example.com", "patient"),
+        ("user2@example.com", "patient"),
+    ]
+
+
+def test_email_role_migration_refuses_existing_duplicates_and_changes_nothing(legacy_engine):
+    add_account(legacy_engine, "user1@example.com", uuid.uuid4())
+    add_account(legacy_engine, "user1@example.com", uuid.uuid4())
+    before = accounts(legacy_engine)
+
+    with pytest.raises(MigrationError, match=EMAIL_ROLE_MIGRATION):
+        run_migrations(legacy_engine)
+
+    assert accounts(legacy_engine) == before
+    assert email_role_index(legacy_engine) is None
+
+
+def test_email_role_migration_applies_once_duplicates_are_resolved(legacy_engine):
+    add_account(legacy_engine, "user1@example.com", uuid.uuid4())
+    add_account(legacy_engine, "user1@example.com", uuid.uuid4())
+    with pytest.raises(MigrationError):
+        run_migrations(legacy_engine)
+
+    with legacy_engine.begin() as conn:
+        kept = conn.execute(select(ACCOUNTS.c.id).order_by(ACCOUNTS.c.id).limit(1)).scalar()
+        conn.execute(ACCOUNTS.delete().where(ACCOUNTS.c.id != kept))
+
+    assert run_migrations(legacy_engine) == MIGRATIONS
+    assert email_role_index(legacy_engine) is not None
+
+
+# --- Emails and names in lower case ---
+
+USERS = User.__table__
+
+
+def add_user(engine: Engine, email: str, first_name: str, last_name: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            insert(USERS).values(
+                id=uuid.uuid4(),
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                contact={"address": {"state": "EX"}},
+                national_id="AB-12",
+            )
+        )
+
+
+def users(engine: Engine) -> list[tuple]:
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(
+                USERS.c.email,
+                USERS.c.first_name,
+                USERS.c.last_name,
+                USERS.c.national_id,
+                USERS.c.contact,
+            )
+        ).all()
+    return sorted(tuple(row) for row in rows)
+
+
+def test_lowercase_migration_lowers_emails_and_names_only(legacy_engine):
+    add_user(legacy_engine, "Sam@Example.COM", "SAM", "McExample")
+    add_user(legacy_engine, "élodie@example.com", "ÉLODIE", "ØRSTED")
+    add_user(legacy_engine, "ann@example.com", "ann", "lee")
+    add_account(legacy_engine, "Sam@Example.COM", uuid.uuid4(), "doctor")
+
+    assert run_migrations(legacy_engine) == MIGRATIONS
+
+    assert users(legacy_engine) == [
+        ("ann@example.com", "ann", "lee", "AB-12", {"address": {"state": "EX"}}),
+        ("sam@example.com", "sam", "mcexample", "AB-12", {"address": {"state": "EX"}}),
+        ("élodie@example.com", "élodie", "ørsted", "AB-12", {"address": {"state": "EX"}}),
+    ]
+    assert accounts(legacy_engine) == [("sam@example.com", "doctor")]
+
+
+def test_lowercase_migration_refuses_emails_that_would_collide_and_changes_nothing(
+    legacy_engine,
+):
+    add_user(legacy_engine, "Sam@Example.com", "SAM", "EXAMPLE")
+    add_account(legacy_engine, "Sam@Example.com", uuid.uuid4(), "doctor")
+    add_account(legacy_engine, "sam@example.com", uuid.uuid4(), "doctor")
+    users_before, accounts_before = users(legacy_engine), accounts(legacy_engine)
+
+    with pytest.raises(MigrationError, match=LOWERCASE_MIGRATION):
+        run_migrations(legacy_engine)
+
+    # users was updated first in the same transaction; it is rolled back too.
+    assert users(legacy_engine) == users_before
+    assert accounts(legacy_engine) == accounts_before
+
+
+def test_same_email_in_different_case_for_different_roles_is_lowered(legacy_engine):
+    add_account(legacy_engine, "Sam@Example.com", uuid.uuid4(), "doctor")
+    add_account(legacy_engine, "sam@example.com", uuid.uuid4(), "patient")
+
+    assert run_migrations(legacy_engine) == MIGRATIONS
+
+    assert accounts(legacy_engine) == [
+        ("sam@example.com", "doctor"),
+        ("sam@example.com", "patient"),
+    ]
+
+
+def test_sqlite_lower_override_does_not_outlive_the_migration(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path}/pool.db")
+    Base.metadata.create_all(engine)
+    run_migrations(engine)
+
+    with engine.connect() as conn:
+        # The built-in again: ASCII only.
+        assert conn.exec_driver_sql("SELECT lower('ÉX')").scalar() == "Éx"
+    engine.dispose()
+
+
+def test_migrate_db_command_creates_the_membership_table(tmp_path):
+    url = f"sqlite:///{tmp_path}/old.db"
+    create_legacy_role_accounts(create_engine(url))
+    env = {**os.environ, "DATABASE_URL": url, "ENV": ""}
+
+    result = subprocess.run(
+        [sys.executable, "-m", "health_tech.migrate.migrations"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    migrated = inspect(create_engine(url))
+    assert ORGANISATION_MEMBERSHIPS_TABLE in migrated.get_table_names()
+    assert any(
+        index["name"] == MEMBERSHIP_UNIQUE and index["unique"]
+        for index in migrated.get_indexes(ORGANISATION_MEMBERSHIPS_TABLE)
+    )

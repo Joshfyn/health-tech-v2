@@ -19,7 +19,14 @@ from health_tech.lib.tokenmaker import (
     validate_token,
 )
 
-IDENTITY = TokenRequirements(email="user1@example.com", user_id="account-1", role="doctor")
+IDENTITY = TokenRequirements(
+    email="user1@example.com",
+    user_id="person-1",
+    role_account_id="account-1",
+    role="doctor",
+    organisation_id="organisation-1",
+)
+SESSION_PURPOSES = [TokenPurpose.ACCESS, TokenPurpose.REFRESH]
 HMAC_HASHES = {"HS256": hashlib.sha256, "HS384": hashlib.sha384, "HS512": hashlib.sha512}
 
 
@@ -46,7 +53,9 @@ def valid_payload(purpose: TokenPurpose) -> dict:
     return {
         "Email": IDENTITY.email,
         "UserID": IDENTITY.user_id,
+        "RoleAccountID": IDENTITY.role_account_id,
         "Role": IDENTITY.role,
+        "OrganisationID": IDENTITY.organisation_id,
         "Purpose": purpose.value,
         "iat": now,
         "exp": now + 60,
@@ -57,11 +66,13 @@ def valid_payload(purpose: TokenPurpose) -> dict:
 def test_token_round_trips_for_its_own_purpose(purpose):
     claims = validate_token(generate_token(IDENTITY, purpose), purpose)
 
-    assert (claims.email, claims.user_id, claims.role) == (
-        "user1@example.com",
-        "account-1",
-        "doctor",
-    )
+    assert (
+        claims.email,
+        claims.user_id,
+        claims.role_account_id,
+        claims.role,
+        claims.organisation_id,
+    ) == ("user1@example.com", "person-1", "account-1", "doctor", "organisation-1")
     assert claims.purpose == purpose
     assert claims.expires_at - claims.issued_at == TOKEN_LIFETIME_SECONDS[purpose]
 
@@ -123,13 +134,39 @@ def test_legacy_token_signed_with_raw_secret_is_rejected():
             validate_token(legacy, purpose)
 
 
-@pytest.mark.parametrize("missing", ["Purpose", "exp", "iat"])
-def test_required_claims_must_be_present(missing):
-    payload = valid_payload(TokenPurpose.ACCESS)
+@pytest.mark.parametrize("purpose", SESSION_PURPOSES)
+@pytest.mark.parametrize(
+    "missing",
+    ["Purpose", "exp", "iat", "Email", "UserID", "RoleAccountID", "Role", "OrganisationID"],
+)
+def test_session_token_claims_must_be_present(purpose, missing):
+    payload = valid_payload(purpose)
     del payload[missing]
 
     with pytest.raises(TokenError):
-        validate_token(signed(payload, TokenPurpose.ACCESS), TokenPurpose.ACCESS)
+        validate_token(signed(payload, purpose), purpose)
+
+
+@pytest.mark.parametrize("purpose", SESSION_PURPOSES)
+def test_session_token_from_before_role_account_claim_is_rejected(purpose):
+    # Then UserID carried the role account ID; it must never be read as a person's ID.
+    payload = valid_payload(purpose)
+    del payload["RoleAccountID"]
+    payload["UserID"] = "account-1"
+
+    with pytest.raises(TokenError, match="RoleAccountID"):
+        validate_token(signed(payload, purpose), purpose)
+
+
+def test_confirmation_link_emailed_before_role_account_claim_still_validates():
+    payload = valid_payload(TokenPurpose.EMAIL_CONFIRMATION)
+    del payload["RoleAccountID"]
+
+    claims = validate_token(
+        signed(payload, TokenPurpose.EMAIL_CONFIRMATION), TokenPurpose.EMAIL_CONFIRMATION
+    )
+
+    assert (claims.user_id, claims.role_account_id) == ("person-1", "")
 
 
 def test_expired_token_is_rejected():
@@ -189,3 +226,23 @@ def test_empty_secret_fails_closed(empty_jwt_secret):
     )
     with pytest.raises(TokenError, match="JWT_SECRET is not set"):
         validate_token(forged, TokenPurpose.ACCESS)
+
+
+@pytest.mark.parametrize("error", [jwt.PyJWTError("bad key"), TypeError("not serializable")])
+def test_signing_failure_raises_token_error(monkeypatch, error):
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(tokenmaker.jwt, "encode", fail)
+
+    with pytest.raises(TokenError, match="error signing JWT token"):
+        generate_token(IDENTITY, TokenPurpose.ACCESS)
+
+
+def test_every_session_claim_is_written_even_when_empty():
+    # Patients and super admins carry an empty OrganisationID rather than none at all.
+    token = generate_token(TokenRequirements(role="patient"), TokenPurpose.ACCESS)
+
+    payload = jwt.decode(token, options={"verify_signature": False})
+    assert {"Email", "UserID", "RoleAccountID", "Role", "OrganisationID"} <= payload.keys()
+    assert validate_token(token, TokenPurpose.ACCESS).organisation_id == ""

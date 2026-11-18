@@ -18,11 +18,20 @@ from health_tech.auth.service import AuthService
 from health_tech.lib.config import Settings, get_settings
 from health_tech.lib.db import connect_to_db
 from health_tech.lib.tokenmaker import TokenPurpose, TokenRequirements, generate_token
-from health_tech.user.model import RoleAccount
+from health_tech.user.model import (
+    ORGANISATION_ROLES,
+    ROLE_ACCOUNT_EMAIL_ROLE_UNIQUE,
+    RoleAccount,
+    User,
+)
 from health_tech.user.router import new_user_router
 from health_tech.user.service import UserService
 
 get_settings.cache_clear()
+
+# The organisation test tokens for organisation roles are signed in to, unless a test says.
+ORGANISATION_ID = "7d4c2e1a-3b5f-4a6e-9d8c-1f2e3a4b5c6d"
+OTHER_ORGANISATION_ID = "0b9a8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d"
 
 
 @dataclass
@@ -45,16 +54,19 @@ def db(tmp_path) -> sessionmaker[Session]:
 
 
 def create_legacy_role_accounts(engine: Engine) -> None:
-    """Create role_accounts as it was before the not-nil rule."""
+    """Create role_accounts as it was before the not-nil rule and the email-and-role index,
+    beside users, whose shape has not changed."""
     metadata = MetaData()
+    User.__table__.to_metadata(metadata)
     table = RoleAccount.__table__.to_metadata(metadata)
     table.constraints = {c for c in table.constraints if not isinstance(c, CheckConstraint)}
+    table.indexes = {i for i in table.indexes if i.name != ROLE_ACCOUNT_EMAIL_ROLE_UNIQUE}
     metadata.create_all(engine)
 
 
 @pytest.fixture
 def legacy_db(tmp_path) -> sessionmaker[Session]:
-    """Database whose role_accounts table predates the not-nil rule."""
+    """Database whose role_accounts table predates the migrations."""
     url = f"sqlite:///{tmp_path}/legacy.db"
     create_legacy_role_accounts(create_engine(url))
     return connect_to_db(Settings(_env_file=None, database_url=url))
@@ -79,18 +91,47 @@ def auth_client(db) -> Iterator[TestClient]:
         yield client
 
 
-def make_token(role: str, user_id: str = "", purpose: TokenPurpose = TokenPurpose.ACCESS) -> str:
-    """Return a token for purpose."""
+def make_token(
+    role: str,
+    user_id: str = "",
+    purpose: TokenPurpose = TokenPurpose.ACCESS,
+    role_account_id: str = "",
+    organisation_id: str | None = None,
+) -> str:
+    """Return a token for purpose. user_id is the person, role_account_id the login.
+
+    Organisation roles are signed in to ORGANISATION_ID unless organisation_id says otherwise;
+    other roles to none.
+    """
+    if organisation_id is None:
+        organisation_id = ORGANISATION_ID if role in ORGANISATION_ROLES else ""
     return generate_token(
-        TokenRequirements(email="admin@example.com", user_id=user_id, role=role), purpose
+        TokenRequirements(
+            email="admin@example.com",
+            user_id=user_id,
+            role_account_id=role_account_id,
+            role=role,
+            organisation_id=organisation_id,
+        ),
+        purpose,
     )
 
 
-def auth_header(role: str, user_id: str = "") -> dict[str, str]:
+def auth_header(
+    role: str, user_id: str = "", role_account_id: str = "", organisation_id: str | None = None
+) -> dict[str, str]:
     """Return an X-USER-TOKEN header with an access token."""
-    return {"X-USER-TOKEN": make_token(role, user_id)}
+    return {
+        "X-USER-TOKEN": make_token(
+            role, user_id, role_account_id=role_account_id, organisation_id=organisation_id
+        )
+    }
 
 
-def refresh_header(role: str, user_id: str = "") -> dict[str, str]:
+def refresh_header(role: str, user_id: str = "", role_account_id: str = "") -> dict[str, str]:
     """Return an X-REFRESH-TOKEN header with a refresh token."""
-    return {"X-REFRESH-TOKEN": make_token(role, user_id, TokenPurpose.REFRESH)}
+    return {
+        "X-REFRESH-TOKEN": make_token(
+            role, user_id, TokenPurpose.REFRESH, role_account_id=role_account_id
+        )
+    }

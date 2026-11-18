@@ -15,4 +15,11 @@ def new_user_router(svc: UserService) -> FastAPI:
     app.add_api_route(
         "/health-tech/user/healthcare-providers", svc.create_provider_account, methods=["POST"]
     )
+    app.add_api_route(
+        "/health-tech/user/healthcare-providers/organisations",
+        svc.add_provider_organisation,
+        methods=["POST"],
+    )
+    # Last, so the fixed paths above are never read as a user ID.
+    app.add_api_route("/health-tech/user/{user_id}", svc.get_user, methods=["GET"])
     return app

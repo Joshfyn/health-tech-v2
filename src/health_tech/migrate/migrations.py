@@ -42,11 +42,19 @@ def run_migrations(engine: Engine) -> list[str]:
     return applied
 
 
+def _unicode_lower(value: object) -> object:
+    return value.lower() if isinstance(value, str) else value
+
+
 def _execute_script(engine: Engine, sql: str) -> None:
     raw = engine.raw_connection()
     try:
         driver = raw.driver_connection
         if engine.dialect.name == "sqlite":
+            # SQLite's lower() changes only ASCII letters; the services lower-case with Python,
+            # so scripts get the same result ("ÉLODIE" -> "élodie", not "Élodie"). The
+            # connection is discarded afterwards rather than pooled with the override.
+            driver.create_function("lower", 1, _unicode_lower, deterministic=True)
             # sqlite3 runs one statement per execute(); executescript runs them all.
             try:
                 driver.executescript(f"BEGIN;\n{sql}\nCOMMIT;")
@@ -63,6 +71,8 @@ def _execute_script(engine: Engine, sql: str) -> None:
                 raw.rollback()
                 raise
     finally:
+        if engine.dialect.name == "sqlite":
+            raw.invalidate()
         raw.close()
 
 
